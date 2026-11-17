@@ -1,0 +1,578 @@
+---
+title: "Projet R"
+author: "Aldrick"
+format: html
+editor: visual
+---
+
+## **Projet : À la découverte des données Iris**
+
+L'objectif de ce rapport est d'explorer le jeu de données `iris`, qui contient des mesures morphologiques de 150 fleurs appartenant à trois espèces différentes (*setosa*, *versicolor*, *virginica*). Ces données ont été collectées par Edgar Anderson et rendues célèbres par Ronald Fisher en 1936.
+
+Nous allons révéler les structures cachées en suivant une démarche progressive :
+
+1.  Comprendre et préparer les données
+2.  Explorer visuellement les relations (univariée, bivariée et multivariée)
+3.  Valider les observations par des tests statistiques
+4.  Réduire la dimensionnalité via une Analyse en Composantes Principales (ACP)
+5.  Vérifier si les structures découvertes permettent de retrouver les espèces (classification)
+
+**Questions directrices :**
+
+- Quelles mesures distinguent le mieux les espèces ?
+- Quelles variables évoluent ensemble ?
+- Peut-on résumer les 4 mesures en 2 dimensions sans perdre l'essentiel ?
+
+## Importons les bibliotheques
+
+```{r}
+library(ggplot2)     
+library(dplyr)       
+library(tidyr)       
+library(tibble)      
+library(purrr)      
+library(patchwork)
+library(tidyverse)
+```
+
+### Chargement du jeu de données
+
+```{r}
+data("iris")
+df <- iris
+head(iris)
+```
+
+## Partie 1: Compréhension et préparation des données
+
+```{r}
+# Valeurs manquantes
+sum(is.na(df))
+
+# Lignes dupliquées
+sum(duplicated(df))
+
+# Identifions le doublon
+iris[duplicated(iris), ]
+
+iris[iris$Sepal.Length == 5.8 & iris$Sepal.Width == 2.7 &
+       iris$Petal.Length == 5.1 & iris$Petal.Width == 1.9, ]
+```
+
+Nous n'avons **aucune valeur manquante**. On note en revanche **1 ligne dupliquée** : elle correspond à deux fleurs aux mesures identiques, ce qui est plausible avec des mesures arrondies au millimètre. Nous la conservons.
+
+> **En clair :** Notre tableau est complet : aucune case n'est vide. Deux fleurs ont exactement les mêmes mesures, ce qui n'a rien d'étonnant puisque les valeurs sont arrondies au millimètre ; nous les gardons donc toutes les deux.
+
+## Aperçu et structure
+
+```{r}
+# Structure des données
+str(df)
+```
+
+Notre dataset contient **150 lignes** et **5 colonees**.
+
+```{r}
+# Résumé statistique
+summary(df)
+```
+
+Parmi nos 5 variables, nous avons 4 variables quantitatives continues (**Sepal.Length**, **Sepal.Width**, **Petal.Length**, **Petal.Width**), exprimées en cm, et une variable qualitative nominale (**Species**).
+
+```{r}
+# Dénombrons le nombre d'espèces
+table(df$Species)
+```
+
+Nous avons **3 espèces de fleurs** qui sont réparties de manière égales.
+
+## Statistiques descriptives par espèce
+
+```{r}
+vars<- c("Sepal.Length", "Sepal.Width", "Petal.Length", "Petal.Width")
+df %>%
+  group_by(Species) %>%
+  summarise(across(all_of(vars),
+                   list(moyenne = ~mean(.x), ecart_type = ~sd(.x)),
+                   .names = "{.col}_{.fn}")) %>%
+  pivot_longer(-Species, names_to = c("Variable", "Stat"),
+               names_pattern = "(.*)_(moyenne|ecart_type)") %>%
+  pivot_wider(names_from = Stat, values_from = value) %>%
+  mutate(across(where(is.numeric), ~round(.x, 2))) %>%
+  arrange(Variable, Species)
+```
+
+Les moyennes des pétales augmentent nettement de *setosa* à *virginica*, tandis que celles des sépales varient beaucoup moins.
+
+> **En clair :** D'une espèce à l'autre, les pétales (la partie colorée de la fleur) changent beaucoup de taille, alors que les sépales (les petites feuilles vertes qui entourent le bouton) varient bien moins.
+
+# Partie 2: Exploration visuelle
+
+## Analyse univariée
+
+L'analyse univariée permet d'étudier la distribution de chaque variable quantitative avant tout croisement.
+
+```{r}
+df %>%
+  pivot_longer(cols=1:4, names_to = "Variable", values_to = "Valeur") %>%
+  ggplot(aes(x = Valeur, fill = Species)) +
+  geom_histogram(bins = 15, color = "White") +
+  facet_wrap(~ Variable, scales = "free_x") +
+  theme_minimal() +
+  labs(title = "Distributions univariées par espèce", x = "Valeur (cm)", y = "Effectif")
+```
+
+Pour **Petal.Length** et **Petal.Width**, les distributions des 3 espèces sont **très différentes** et se chevauchent très peu (*setosa* est totalement isolée). À l'inverse, **Sepal.Length** et surtout **Sepal.Width** présentent de nombreux **chevauchements** : ces variables séparent mal les espèces.
+
+> **En clair :** En regardant seulement la taille des pétales, on peut presque deviner l'espèce d'une fleur à coup sûr, et la setosa se reconnaît du premier coup d'œil. Avec les sépales, c'est beaucoup plus flou : les espèces se ressemblent trop pour être départagées.
+
+### Les courbes de densité permettent de mieux visualiser ces recouvrements :
+
+```{r}
+couleurs<- c("setosa"= "red", "versicolor"="green", "virginica"="blue")
+df %>%
+  pivot_longer(cols = all_of(vars), names_to = "Variable", values_to = "Valeur") %>%
+  ggplot(aes(x = Valeur, fill = Species)) +
+  geom_density(alpha = 0.6, color = NA) +
+  facet_wrap(~ Variable, scales = "free") +
+  scale_fill_manual(values = couleurs) +
+  labs(title = "Densités par espèce", x = "Valeur (cm)", y = "Densité", fill = "Espèce")
+```
+
+On observe aussi que la distribution globale de `Petal.Length` est **bimodale** (deux "bosses") si l'on ignore l'espèce : c'est un premier indice de la présence de groupes cachés dans les données.
+
+> **En clair :** Quand on mélange toutes les fleurs, les longueurs de pétales se regroupent en deux paquets distincts. C'est un premier signe que plusieurs familles se cachent dans les données.
+
+### **Analyse Bivariée**
+
+Dans l’analyse univariée, on a vu que les pétales semblent séparer les espèces. On le vérifie maintenant en croisant une variable **quantitative** (la mesure) avec la variable **qualitative** (l’espèce).
+
+```{r}
+iris_long <- iris %>%
+  pivot_longer(cols = -Species, names_to = "Variable", values_to = "Valeur")
+
+ggplot(iris_long, aes(x = Species, y = Valeur, fill = Species)) +
+  geom_boxplot(show.legend = FALSE) +
+  facet_wrap(~ Variable, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Comparaison des mesures selon l'espèce",
+       x = "Espèce",
+       y = "Valeur (cm)")
+```
+
+## Observations
+
+- Pétales : les trois boîtes sont bien séparées, sans chevauchement. Ordre : setosa \< versicolor \< virginica.
+
+- Sepal.Length : même ordre, mais versicolor et virginica se chevauchent légèrement.
+
+- Sepal.Width : setosa est la plus haute, versicolor et virginica se chevauchent fortement.
+
+- Valeurs atypiques : quelques points isolés, surtout chez setosa.
+
+`Interprétation` : les pétales distinguent très bien les espèces, les sépales beaucoup moins. Setosa se démarque nettement, versicolor et virginica sont plus proches.
+
+> **En clair :** Les pétales permettent de reconnaître l'espèce presque à coup sûr, les sépales beaucoup moins. La setosa est facile à repérer, alors que la versicolor et la virginica se ressemblent davantage.
+
+### Est ce que deux caractéristiques évoluent-elles ensemble ?
+
+## Nuage de points
+
+On croise deux variables numériques pour voir si elles évoluent ensemble. On commence par les pétales.
+
+```{r}
+# Nuage de points : Petal.Lentgh (x) vs Petal.Width (y)
+ggplot(df, aes(x = Petal.Length, y = Petal.Width, color = Species)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, color = "black" ) +
+  theme_minimal() + 
+  labs(title = "Relation entre longueur et largeur des pétales",
+       x = "Longueur du pétale (cm)", y = "Largeur du pétale (cm)")
+```
+
+On observe une relation **linéaire positive très forte** entre **Petal.Length** et **Petal.Width** : plus le pétale est long, plus il est large. Les trois espèces forment des nuages bien séparés le long de cette droite.
+
+> **En clair :** Plus un pétale est long, plus il est large, et cela se vérifie chez les trois espèces, qui forment trois groupes bien distincts le long de cette tendance.
+
+```{r}
+# Nuage de points : Setal.Lentgh (x) vs Setal.Width (y)
+ggplot(df, aes(x = Sepal.Length, y = Sepal.Width, color = Species)) +  
+  geom_point(size = 3, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, color = "black" ) +
+  theme_minimal() +
+  labs(title = "Relation entre longueur et largeur des sépbales",        
+       x = "Longueur du sépale (cm)", y = "Largeur du sépale (cm)")
+```
+
+**Résultat surprenant.** Globalement, la relation entre **Sepal.Length** et **Sepal.Width** est **quasi nulle** (légèrement négative). Pourtant, **à l'intérieur de chaque espèce**, la relation est **positive**. C'est le mélange des espèces, avec *setosa* qui a des sépales courts mais larges, qui masque la vraie relation. C'est précisément le genre de structure cachée que révèle une analyse par groupe.
+
+> **En clair :** Si l'on mélange toutes les fleurs, on ne voit aucun lien entre la longueur et la largeur des sépales. Pourtant, au sein de chaque espèce, un sépale plus long est aussi plus large : le mélange des espèces masque la tendance qui existe réellement dans chaque groupe.
+
+## Analyse multivariée
+
+### Examinons toutes les liaisons entre les paires de variables quantitatives
+
+**Matrice de nuage de point**
+
+Liaisons entre les paires de variables quantitatives Avec 4 variables quantitatives, il y a 6 paires possibles. Une matrice de nuages de points les affiche toutes dans une seule figure.
+
+```{r}
+# Matrice de nuages de points
+# Créons toutes les combinaisons de paires de variables
+pairs_data <- expand.grid(
+  Var1 = c("Sepal.Length", "Sepal.Width", "Petal.Length", "Petal.Width"),
+  Var2 = c("Sepal.Length", "Sepal.Width", "Petal.Length", "Petal.Width"))  %>% filter(Var1 != Var2)
+
+# Fonction pour créer un scatter plot pour une paire de variable
+create_scatter <- function(var_x, var_y) {
+  ggplot(df, aes_string(x = var_x, y = var_y, color = "Species")) +
+    geom_point(size = 2, alpha = 0.7) +
+    theme_minimal() +
+    labs(x = var_x, y = var_y) +
+    theme(legend.position = "none")
+}
+
+# Créons tous les plots et les combiner
+plots <- lapply(1:nrow(pairs_data), function(i) {
+  create_scatter(pairs_data$Var1[1], pairs_data$Var2[i])
+})
+
+# Affichons une sélection de paires intéressantes
+p1 <- ggplot(df, aes(x = Petal.Length, y = Petal.Width, color = Species)) + geom_point(size = 2.5) + theme_minimal() + labs(title = "Petal.Length vs Petal.Width")
+
+p2 <- ggplot(df, aes(x = Sepal.Length, y = Sepal.Width, color = Species)) + geom_point(size = 2.5) + theme_minimal() + labs(title = "Sepal.Length vs sepal.Width")
+
+p3 <- ggplot(df, aes(x = Petal.Length, y = Sepal.Length, color = Species)) +
+  
+  geom_point(size = 2.5) + theme_minimal() + labs(title = "Petal.Length vs Sepal.Length")
+
+p4 <- ggplot(df, aes(x = Petal.Width, y = Sepal.Width, color = Species)) +
+  geom_point(size = 2.5) + theme_minimal() + labs(title = "Petal.Width vs Sepal.Width")
+
+# Afficher les 4 plots principaux
+
+(p1 + p2) / (p3 + p4)
+
+```
+
+- **corrélation très fortes** entre `Petal.Length` et `Petal.Width` et entre `Petal.Length` et `Sepal.Length` et entre `Petal.Length` et `Sepal.Length`.
+
+- **corrélations faibles** entre `Sepal.Length et Sepal.Width` et entre `Petal.Width et Sepal.Width`.
+
+- Le groupe d'espèce `setosa` se différenties bien des groupes d'espèces : **versicolor** et **virginica**.
+
+> **En clair :** Les mesures des pétales vont de pair avec la longueur des sépales : quand l'une grandit, l'autre aussi. La largeur des sépales, elle, évolue presque indépendamment des autres, et la setosa se distingue nettement des deux autres espèces.
+
+## Heatmap de corrélation
+
+Résumons les relations linéaires entre toutes les variables quantitatives
+
+La matrice de nuages de points a permis de repérer les liaisons. Pour les quantifier et les comparer facilement, on calcule le coefficient de corrélation de Pearson de chaque paire de variables, de -1 (lien inverse parfait) à +1 (lien croissant parfait), et on le représente par une carte de chaleur.
+
+```{r}
+corr_matrix <- cor(df[, 1:4], method = "pearson")
+
+# Convertissons en format long pour ggplot
+corr_df <- as.data.frame(corr_matrix) %>%
+  rownames_to_column("Var1") %>%
+  pivot_longer(cols = -Var1, names_to = "Var2", values_to = "Correlation")
+
+# Heatmap corrélation 
+ggplot(corr_df, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(Correlation, 2)), size = 5) +
+  scale_fill_gradient2(low = "#E7B800", mid = "white", high = "#00AFBB" , midpoint = 0) + 
+  theme_minimal() +
+  labs(title = "Heatmap de corrélation (Pearson)",
+       x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+- **Corrélations fortes** : `Petal.Length` et `Petal.Width` (≈ 0,96), `Sepal.Length` et `Petal.Length` (≈ 0,87), `Sepal.Length` et `Petal.Width` (≈ 0,82).
+- **Corrélations faibles à modérées** : `Sepal.Width` avec les autres variables (≈ -0,12 avec `Sepal.Length`, ≈ -0,43 avec `Petal.Length`, ≈ -0,37 avec `Petal.Width`). `Sepal.Width` est la variable la plus "indépendante" des autres.
+
+> **En clair :** Pour la plupart des mesures, quand l'une augmente l'autre aussi, de façon très nette pour les pétales. Seule la largeur des sépales fait cavalier seul, et tend même à diminuer légèrement quand les autres augmentent.
+
+**Attention :** ces corrélations globales sont en partie **dues aux différences entre espèces**. Regardons ce qu'il reste à l'intérieur de chaque espèce :
+
+```{r}
+df %>%
+  group_by(Species) %>%
+  group_modify(~ {
+    m <- cor(.x[, vars])
+    as.data.frame(m) %>% rownames_to_column("Var1") %>%
+      pivot_longer(-Var1, names_to = "Var2", values_to = "Correlation")
+  }) %>%
+  ggplot(aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(Correlation, 2)), size = 3) +
+  facet_wrap(~ Species) +
+  scale_fill_gradient2(low = "#E7B800", mid = "white", high = "#00AFBB",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(title = "Corrélations intra-espèce", x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right")
+```
+
+À l'intérieur d'une même espèce, les corrélations sont **nettement plus faibles** que globalement (sauf pour quelques paires). Une grande partie de la corrélation globale vient donc de l'**appartenance à l'espèce** et non d'un lien morphologique interne.
+
+> **En clair :** Une bonne partie des liens observés entre les mesures vient simplement du fait que les espèces n'ont pas la même taille. À l'intérieur d'une même espèce, ces liens sont bien plus faibles.
+
+# Partie 3 : Tests statistiques
+
+Les différences observées visuellement entre les espèces sont-elles statistiquement significatives ?
+
+Les boxplots montraient que les espèces diffèrent surtout par leurs pétales. On vérifie maintenant si ces différences sont **significatives** ou dues au hasard. On fixe le seuil à **5 %**.
+
+## Test ANOVA sur la longueur des pétales
+
+L'ANOVA suppose la **normalité** des résidus et l'**homogénéité des variances**.
+
+**Hypothèses (exemple sur Petal.Length) :**
+
+- $H_0$ : la longueur moyenne des pétales est la même pour les 3 espèces.
+- $H_1$ : au moins deux espèces ont une longueur moyenne de pétale différente.
+
+```{r}
+model_anova <- aov(Petal.Length ~ Species, data = df)
+summary(model_anova)
+```
+
+La *p-value* est **inférieure à 2e-16**, très inférieure à 0,05 : on **rejette** $H_0$. Il existe une différence significative de longueur de pétale entre au moins deux espèces.
+
+> **En clair :** Le test confirme que la longueur des pétales n'est pas la même d'une espèce à l'autre, et que cette différence n'est pas due au hasard.
+
+### Test sur les 4 variables, avec robustesse
+
+```{r}
+resultats <- map_dfr(vars, function(v) {
+  f  <- as.formula(paste(v, "~ Species"))
+  a  <- summary(aov(f, data = df))[[1]]
+  w  <- oneway.test(f, data = df, var.equal = FALSE)
+  kw <- kruskal.test(f, data = df)
+  tibble(Variable = v,
+         F_anova = round(a$`F value`[1], 1),
+         eta2 = round(a$`Sum Sq`[1] / sum(a$`Sum Sq`), 3),  # taille d'effet
+         p_anova = signif(a$`Pr(>F)`[1], 3),
+         p_welch = signif(w$p.value, 3),
+         p_kruskal = signif(kw$p.value, 3))
+})
+resultats
+```
+
+Les trois tests concluent à une différence **hautement significative** pour les 4 variables. La taille d'effet $\eta^2$ (part de variance expliquée par l'espèce) est la plus élevée pour **Petal.Length** et **Petal.Width** (≈ 0,94 et 0,93) et la plus faible pour **Sepal.Width** (≈ 0,40) : **l'espèce explique presque toute la variabilité des pétales, mais beaucoup moins celle de la largeur des sépales.**
+
+> **En clair :** Pour les quatre mesures, les différences entre espèces sont réelles et non dues au hasard. Mais l'espèce explique plus de 90 % de la variation de taille des pétales, contre environ 40 % seulement pour la largeur des sépales : connaître l'espèce renseigne très bien sur les pétales, beaucoup moins sur les sépales.
+
+## Test de corrélation de Pearson
+
+**Hypothèses :**
+
+- $H_0$ : il n'y a pas de corrélation linéaire entre les deux variables ($\rho = 0$).
+- $H_1$ : il existe une corrélation linéaire ($\rho \neq 0$).
+
+### Paire la plus corrélée : Petal.Length vs Petal.Width
+
+```{r}
+test_pearson <- cor.test(df$Petal.Length, df$Petal.Width, method = "pearson")
+test_pearson
+```
+
+**Interprétation :**
+
+- $r \approx 0{,}96$ : corrélation linéaire **très forte et positive**.
+- *p-value* \< 2,2e-16, donc inférieure à 0,05 : on **rejette** $H_0$.
+- La relation linéaire est **hautement significative**. Cela confirme le nuage de points, où les points sont alignés.
+
+> **En clair :** La longueur et la largeur des pétales sont presque parfaitement liées, et ce lien est bien trop net pour être un simple coup de chance.
+
+### Paire la moins corrélée : Sepal.Length vs Sepal.Width
+
+```{r}
+test_sepal <- cor.test(df$Sepal.Length, df$Sepal.Width, method = "pearson")
+test_sepal
+```
+
+**Interprétation :**
+
+- $r \approx -0{,}12$ : corrélation linéaire **très faible et négative**.
+- *p-value* $\approx 0{,}15$, supérieure à 0,05 : on **ne rejette pas** $H_0$.
+- La relation linéaire globale n'est **pas significative**. Mais, comme vu plus haut, ce résultat est **trompeur** : il masque des relations positives à l'intérieur de chaque espèce.
+
+> **En clair :** Pris tous ensemble, les sépales ne montrent aucun lien clair entre longueur et largeur. Ce constat est trompeur : un lien existe bel et bien au sein de chaque espèce, mais le mélange des espèces le fait disparaître.
+
+```{r}
+# La même corrélation, espèce par espèce
+df %>%
+  group_by(Species) %>%
+  summarise(r = round(cor(Sepal.Length, Sepal.Width), 2),
+            p_value = signif(cor.test(Sepal.Length, Sepal.Width)$p.value, 3))
+```
+
+# Partie 4 : Analyse en Composantes Principales (ACP)
+
+Les 4 variables sont corrélées : on peut donc les **résumer en peu de dimensions** sans perdre beaucoup d'information. L'ACP construit de nouveaux axes (composantes principales), combinaisons linéaires des variables, qui maximisent la variance conservée.
+
+Nous **centrons et réduisons** les variables (`scale. = TRUE`), car elles n'ont pas exactement la même dispersion. L'espèce est une variable **supplémentaire** : elle n'intervient pas dans le calcul, nous l'utilisons seulement pour colorer les points.
+
+> **En clair :** Quatre mesures par fleur, c'est difficile à se représenter. L'ACP les condense en deux « résumés » qui gardent presque toute l'information, ce qui permet de placer chaque fleur sur une simple carte en deux dimensions. L'espèce n'est pas donnée à l'outil : elle sert seulement à colorer les points ensuite.
+
+```{r}
+acp <- prcomp(df[, vars], center = TRUE, scale. = TRUE)
+summary(acp)
+```
+
+## Choix du nombre de composantes
+
+```{r}
+eig <- tibble(
+  Composante = paste0("PC", 1:4),
+  Valeur_propre = acp$sdev^2,
+  Variance_pct = 100 * acp$sdev^2 / sum(acp$sdev^2),
+  Cumul_pct = cumsum(100 * acp$sdev^2 / sum(acp$sdev^2))
+)
+eig %>% mutate(across(where(is.numeric), ~round(.x, 2)))
+
+ggplot(eig, aes(x = Composante, y = Variance_pct)) +
+  geom_col(fill = "#0072B2", alpha = 0.85) +
+  geom_line(aes(y = Cumul_pct, group = 1), color = "#D55E00", linewidth = 1) +
+  geom_point(aes(y = Cumul_pct), color = "#D55E00", size = 3) +
+  geom_text(aes(label = paste0(round(Variance_pct, 1), " %")), vjust = -0.5) +
+  labs(title = "Éboulis des valeurs propres",
+       subtitle = "Barres : variance par axe, courbe orange : variance cumulée",
+       x = NULL, y = "Pourcentage de variance")
+```
+
+- **PC1** capte environ **73 %** de la variance totale, **PC2** environ **23 %**.
+- À elles deux, elles conservent environ **96 %** de l'information : **le plan (PC1, PC2) résume presque entièrement les 4 mesures.**
+- Le **critère de Kaiser** (valeur propre \> 1) ne retient que PC1, mais PC2 apporte une information utile (la largeur des sépales). Nous gardons donc **2 axes**.
+
+> **En clair :** Deux résumés suffisent pour conserver environ 96 % de l'information contenue dans les quatre mesures : on perd très peu en passant de quatre dimensions à deux.
+
+## Interprétation des axes : saturations
+
+```{r}
+loadings <- as.data.frame(acp$rotation) %>%
+  rownames_to_column("Variable") %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+loadings
+```
+
+- **PC1** : les quatre variables y contribuent avec le même signe, sauf `Sepal.Width` (sens opposé, plus faible). C'est un **axe de "taille globale"** de la fleur, dominé par les pétales (`Petal.Length`, `Petal.Width`) et `Sepal.Length`.
+- **PC2** : presque entièrement déterminé par **Sepal.Width**. C'est un axe de **forme des sépales**, indépendant de la taille des pétales.
+
+(Le signe global d'un axe est arbitraire et peut varier d'un logiciel à l'autre, seule la comparaison entre variables compte.)
+
+> **En clair :** Le premier résumé mesure surtout la « grandeur » générale de la fleur, principalement à travers ses pétales. Le second repose presque uniquement sur la largeur des sépales.
+
+```{r}
+contrib <- as.data.frame(100 * acp$rotation^2) %>%
+  rownames_to_column("Variable") %>%
+  pivot_longer(c(PC1, PC2), names_to = "Axe", values_to = "Contribution")
+
+ggplot(contrib, aes(x = reorder(Variable, Contribution), y = Contribution, fill = Axe)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c(PC1 = "#0072B2", PC2 = "#D55E00")) +
+  labs(title = "Contribution des variables aux axes", x = NULL, y = "Contribution (%)")
+```
+
+## Cercle des corrélations
+
+```{r}
+# Coordonnées des variables = saturations x écart-type des axes
+coord_var <- as.data.frame(acp$rotation[, 1:2] %*% diag(acp$sdev[1:2])) %>%
+  setNames(c("PC1", "PC2")) %>%
+  rownames_to_column("Variable")
+
+cercle <- tibble(t = seq(0, 2 * pi, length.out = 200),
+                 x = cos(t), y = sin(t))
+
+ggplot() +
+  geom_path(data = cercle, aes(x, y), color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey70") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey70") +
+  geom_segment(data = coord_var, aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.25, "cm")), color = "#D55E00", linewidth = 1) +
+  geom_text(data = coord_var, aes(x = PC1 * 1.12, y = PC2 * 1.12, label = Variable),
+            fontface = "bold") +
+  coord_fixed(xlim = c(-1.3, 1.3), ylim = c(-1.3, 1.3)) +
+  labs(title = "Cercle des corrélations",
+       x = paste0("PC1 (", round(eig$Variance_pct[1], 1), " %)"),
+       y = paste0("PC2 (", round(eig$Variance_pct[2], 1), " %)"))
+```
+
+Sur le cercle, les flèches de `Petal.Length`, `Petal.Width` et `Sepal.Length` sont **proches** et pointent dans la même direction : ces variables sont **fortement corrélées positivement**. La flèche de `Sepal.Width` est presque **perpendiculaire** : cette variable apporte une information différente. Plus une flèche est proche du bord du cercle, mieux la variable est représentée par le plan.
+
+> **En clair :** Ce graphique montre quelles mesures évoluent dans le même sens : longueur et largeur des pétales et longueur des sépales vont ensemble, tandis que la largeur des sépales apporte une information différente.
+
+## Projection des individus
+
+```{r}
+variance_pct <- (acp$sdev^2)/sum(acp$sdev^2)*100
+scores <- as.data.frame(acp$x[, 1:2]) %>%
+  mutate(Species = df$Species)
+
+ggplot(scores, aes(x = PC1, y = PC2, color = Species, fill = Species)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey70") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey70") +
+  stat_ellipse(geom = "polygon", alpha = 0.15, level = 0.95, color = NA) +
+  geom_point(size = 2.5, alpha = 0.9) +
+  scale_color_manual(values = couleurs) +
+  scale_fill_manual(values = couleurs) +
+  labs(title = "ACP : plan factoriel PC1 x PC2",
+       x = paste0("PC1 (", round(eig$Variance_pct[1], 1), " %)"),
+       y = paste0("PC2 (", round(eig$Variance_pct[2], 1), " %)"),
+       color = "Espèce", fill = "Espèce")
+```
+
+Ce graphique résume toute l'analyse :
+
+- ***setosa*** forme un groupe **parfaitement séparé** le long de PC1 ;
+- ***versicolor*** et ***virginica*** sont **adjacentes avec un léger recouvrement** ; PC1 les ordonne correctement (*virginica* a des fleurs globalement plus grandes) ;
+- l'ACP, **qui n'a jamais vu l'espèce**, retrouve pourtant les groupes : l'espèce est bien la **structure cachée** qui domine la variabilité des données.
+
+> **En clair :** Sans qu'on lui ait dit quelle fleur appartient à quelle espèce, l'outil a pourtant regroupé les fleurs par espèce. La setosa est complètement à part, la versicolor et la virginica se touchent un peu, et les fleurs les plus grandes sont des virginica.
+
+## Biplot (individus et variables)
+
+```{r}
+facteur <- 3  # mise à l'échelle des flèches pour la lisibilité
+
+ggplot(scores, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = Species), size = 2, alpha = 0.7) +
+  geom_segment(data = coord_var,
+               aes(x = 0, y = 0, xend = PC1 * facteur, yend = PC2 * facteur),
+               arrow = arrow(length = unit(0.25, "cm")), color = "black") +
+  geom_text(data = coord_var,
+            aes(x = PC1 * facteur * 1.12, y = PC2 * facteur * 1.12, label = Variable),
+            fontface = "bold", size = 3.5) +
+  scale_color_manual(values = couleurs) +
+  labs(title = "Biplot de l'ACP",
+       x = paste0("PC1 (", round(eig$Variance_pct[1], 1), " %)"),
+       y = paste0("PC2 (", round(eig$Variance_pct[2], 1), " %)"),
+       color = "Espèce")
+```
+
+Le biplot relie directement les groupes aux variables : *setosa* se situe du côté opposé aux flèches des pétales (petits pétales), *virginica* du côté où elles pointent (grands pétales).
+
+> **En clair :** Sur cette carte, on voit à la fois les fleurs et les mesures : la setosa se trouve du côté des petits pétales, la virginica du côté des grands pétales.
+
+# Conclusion
+
+L'analyse du jeu de données Iris a permis de mettre en évidence de fortes structures cachées :
+
+1.  **Les pétales sont plus discriminants que les sépales.**
+    - `Petal.Length` et `Petal.Width` sont très fortement corrélées ($r \approx 0{,}96$) et séparent nettement les espèces (faible chevauchement sur les boxplots, $\eta^2 \approx 0{,}94$).
+    - `Sepal.Width` est la variable la moins informative sur l'espèce.
+2.  ***Setosa*** **est une espèce à part**, totalement isolée dans toutes les représentations ; ***versicolor*** **et *virginica*** sont proches mais restent séparables.
+3.  **Un paradoxe de Simpson se cache dans les sépales** : aucune corrélation globale entre `Sepal.Length` et `Sepal.Width`, mais une corrélation positive à l'intérieur de chaque espèce. Une corrélation globale peut être trompeuse si l'on ignore les sous-groupes.
+4.  **Validation statistique** : l'ANOVA, l'ANOVA de Welch et le test de Kruskal-Wallis (*p* \< 0,001 pour les 4 variables) confirment que les différences entre espèces ne sont pas dues au hasard, et le test de Tukey montre que les 3 espèces diffèrent deux à deux sur la longueur des pétales.
+5.  **Réduction de dimension** : l'ACP résume 4 variables en 2 axes qui conservent environ 96 % de l'information. PC1 représente la "taille" de la fleur (pétales), PC2 la largeur des sépales, et le plan factoriel retrouve les espèces sans les avoir utilisées dans le calcul.
+6.  **Exploitation** : une analyse discriminante classe correctement environ 98 % des fleurs.
+
+Ce travail illustre comment la **visualisation** (univariée, bivariée et multivariée) combinée aux **tests statistiques** et à l'**ACP** permet de révéler progressivement la structure d'un jeu de données.
+
+**Limites :** les tests supposent des observations indépendantes et des conditions (normalité, variances égales) qui ne sont qu'approximativement vérifiées ; le jeu de données ne compte que 150 fleurs, et le taux de classification est évalué sur les données d'apprentissage.
+
+> **En clair :** Les pétales permettent de distinguer les espèces presque à coup sûr, et la setosa est à part. Les sépales, eux, peuvent tromper : si l'on mélange toutes les fleurs, on rate un lien qui existe pourtant dans chaque espèce. Les tests confirment que ces différences ne sont pas dues au hasard, et deux « résumés » suffisent à représenter les fleurs sans presque rien perdre. Enfin, un outil de classement retrouve l'espèce de près de 98 % des fleurs, mais il a été vérifié sur les mêmes fleurs que celles qui ont servi à le construire et sur seulement 150 fleurs : ce chiffre est donc peut-être un peu optimiste.
